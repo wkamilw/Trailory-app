@@ -47,6 +47,7 @@ dependencies {
     // Biblioteka map Google dla Jetpack Compose
     //implementation("com.google.maps.android:maps-compose:4.3.3")
     //implementation("com.google.android.gms:play-services-maps:18.2.0")
+    implementation("io.coil-kt:coil-compose:2.5.0")
     implementation("androidx.compose.material:material-icons-extended:1.7.5")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
