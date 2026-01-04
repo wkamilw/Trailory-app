@@ -1,7 +1,9 @@
 package com.example.myapplication
 
+import android.Manifest
 import android.content.ContentValues
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
@@ -13,6 +15,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -32,25 +35,35 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import coil.compose.AsyncImage // To odpowiada za wyświetlanie zdjęć
+import androidx.compose.ui.window.Dialog // Import do okienka
+import androidx.core.content.ContextCompat
+import coil.compose.AsyncImage
 import com.example.myapplication.ui.theme.MyApplicationTheme
 import org.osmdroid.config.Configuration
+import org.osmdroid.events.MapListener
+import org.osmdroid.events.ScrollEvent
+import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
+import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 
-// --- GŁÓWNA AKTYWNOŚĆ ---
+// Model danych
+data class PhotoData(
+    val uri: Uri,
+    val location: GeoPoint?
+)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Konfiguracja mapy OSM
         Configuration.getInstance().load(
             applicationContext,
             androidx.preference.PreferenceManager.getDefaultSharedPreferences(applicationContext)
         )
         Configuration.getInstance().userAgentValue = packageName
-
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -60,26 +73,29 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// --- NAWIGACJA I STAN APLIKACJI ---
 enum class AppScreen { MAP, GALLERY, SETTINGS }
 
 @Composable
 fun TrailoryNavigation() {
     var currentScreen by remember { mutableStateOf(AppScreen.MAP) }
+    val capturedPhotos = remember { mutableStateListOf<PhotoData>() }
 
-    // TU JEST KLUCZ: Lista zdjęć trzymana w pamięci aplikacji
-    val capturedPhotos = remember { mutableStateListOf<Uri>() }
+    var mapCenter by remember { mutableStateOf(GeoPoint(52.23, 21.01)) }
+    var mapZoom by remember { mutableStateOf(15.0) }
 
     when (currentScreen) {
         AppScreen.MAP -> MapScreenUI(
+            photos = capturedPhotos,
             onNavigateToGallery = { currentScreen = AppScreen.GALLERY },
             onNavigateToSettings = { currentScreen = AppScreen.SETTINGS },
-            // Gdy zrobisz zdjęcie na mapie, dodajemy je do listy
-            onPhotoCaptured = { newUri ->
-                capturedPhotos.add(0, newUri)
+            onPhotoCaptured = { photoData -> capturedPhotos.add(0, photoData) },
+            initialCenter = mapCenter,
+            initialZoom = mapZoom,
+            onMapPositionChange = { newCenter, newZoom ->
+                mapCenter = newCenter
+                mapZoom = newZoom
             }
         )
-        // Przekazujemy listę zdjęć do Galerii
         AppScreen.GALLERY -> GalleryScreenUI(
             photos = capturedPhotos,
             onBack = { currentScreen = AppScreen.MAP }
@@ -90,96 +106,157 @@ fun TrailoryNavigation() {
     }
 }
 
-// --- EKRAN GALERII (POPRAWIONY) ---
-@Composable
-fun GalleryScreenUI(
-    photos: List<Uri>,
-    onBack: () -> Unit
-) {
-    BackHandler { onBack() }
-
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        // Górny pasek
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null) }
-            Text("Galeria w Aplikacji", style = MaterialTheme.typography.headlineSmall)
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Logika wyświetlania: Pusto vs Zdjęcia
-        if (photos.isEmpty()) {
-            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Text("Brak zdjęć w tej sesji. Zrób zdjęcie!", style = MaterialTheme.typography.bodyLarge)
-            }
-        } else {
-            // SIATKA ZDJĘĆ
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 100.dp),
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(photos) { uri ->
-                    // Komponent biblioteki Coil - wyświetla zdjęcie z URI
-                    AsyncImage(
-                        model = uri,
-                        contentDescription = "Zdjęcie z mapy",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .aspectRatio(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color.LightGray)
-                    )
-                }
-            }
-        }
-    }
-}
-
-// --- EKRAN MAPY ---
 @Composable
 fun MapScreenUI(
+    photos: List<PhotoData>,
     onNavigateToGallery: () -> Unit,
     onNavigateToSettings: () -> Unit,
-    onPhotoCaptured: (Uri) -> Unit
+    onPhotoCaptured: (PhotoData) -> Unit,
+    initialCenter: GeoPoint,
+    initialZoom: Double,
+    onMapPositionChange: (GeoPoint, Double) -> Unit
 ) {
     val context = LocalContext.current
     var currentPhotoUri by remember { mutableStateOf<Uri?>(null) }
+    var tempLocationCapture by remember { mutableStateOf<GeoPoint?>(null) }
+
+    var mapView by remember { mutableStateOf<MapView?>(null) }
+    var myLocationOverlay by remember { mutableStateOf<MyLocationNewOverlay?>(null) }
+
+    // NOWE: Zmienna przechowująca zdjęcie wybranego znacznika
+    var selectedPhoto by remember { mutableStateOf<PhotoData?>(null) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val isGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (isGranted) {
+            myLocationOverlay?.enableMyLocation()
+            myLocationOverlay?.enableFollowLocation()
+            mapView?.invalidate()
+        }
+    }
 
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
         if (success && currentPhotoUri != null) {
-            Toast.makeText(context, "Zdjęcie dodane!", Toast.LENGTH_SHORT).show()
-            // Przekazujemy zdjęcie "w górę" do nawigacji
-            onPhotoCaptured(currentPhotoUri!!)
+            Toast.makeText(context, "Dodano znacznik!", Toast.LENGTH_SHORT).show()
+            val newData = PhotoData(currentPhotoUri!!, tempLocationCapture)
+            onPhotoCaptured(newData)
         }
     }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            // Mapa
+
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     MapView(ctx).apply {
                         setTileSource(TileSourceFactory.MAPNIK)
                         setMultiTouchControls(true)
-                        controller.setZoom(15.0)
-                        controller.setCenter(GeoPoint(52.23, 21.01))
+                        controller.setZoom(initialZoom)
+                        controller.setCenter(initialCenter)
+
+                        addMapListener(object : MapListener {
+                            override fun onScroll(event: ScrollEvent?): Boolean {
+                                onMapPositionChange(GeoPoint(mapCenter.latitude, mapCenter.longitude), zoomLevelDouble)
+                                return true
+                            }
+                            override fun onZoom(event: ZoomEvent?): Boolean {
+                                onMapPositionChange(GeoPoint(mapCenter.latitude, mapCenter.longitude), zoomLevelDouble)
+                                return true
+                            }
+                        })
+
+                        val overlay = MyLocationNewOverlay(GpsMyLocationProvider(ctx), this)
+                        overlay.setPersonIcon(createBlueDot())
+                        overlay.setDirectionIcon(createBlueArrow())
+
+                        overlay.enableMyLocation()
+                        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                            overlay.enableFollowLocation()
+                        }
+                        overlays.add(overlay)
+
+                        myLocationOverlay = overlay
+                        mapView = this
                     }
+                },
+                update = { map ->
+                    // Usuwamy stare markery (poza lokalizacją użytkownika)
+                    val overlaysToRemove = map.overlays.filterIsInstance<Marker>()
+                    map.overlays.removeAll(overlaysToRemove)
+
+                    // Dodajemy nowe markery
+                    photos.forEach { photo ->
+                        if (photo.location != null) {
+                            val marker = Marker(map)
+                            marker.position = photo.location
+                            marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                            marker.title = "Kliknij, by zobaczyć zdjęcie"
+
+                            // NOWE: Obsługa kliknięcia w marker
+                            marker.setOnMarkerClickListener { _, _ ->
+                                selectedPhoto = photo // Ustawiamy to zdjęcie jako wybrane
+                                true // Zwracamy true, żeby nie pokazywał się domyślny dymek z tekstem
+                            }
+
+                            map.overlays.add(marker)
+                        }
+                    }
+                    map.invalidate()
                 }
             )
 
-            // Przycisk Ustawienia
+            // --- OKNO PODGLĄDU ZDJĘCIA (Dialog) ---
+            if (selectedPhoto != null) {
+                Dialog(onDismissRequest = { selectedPhoto = null }) {
+                    // Wygląd okienka ze zdjęciem
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(400.dp) // Wysokość okienka
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            AsyncImage(
+                                model = selectedPhoto!!.uri,
+                                contentDescription = "Podgląd zdjęcia",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            // Przycisk zamykania (X)
+                            IconButton(
+                                onClick = { selectedPhoto = null },
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(8.dp)
+                                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Zamknij", tint = Color.White)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Uprawnienia
+            LaunchedEffect(myLocationOverlay) {
+                if (myLocationOverlay != null && ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                    permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                }
+            }
+
+            // UI - Przyciski
             IconButton(
                 onClick = onNavigateToSettings,
                 modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
                     .background(Color.White.copy(alpha = 0.8f), CircleShape)
             ) { Icon(Icons.Default.Settings, null) }
 
-            // Dolny pasek
             Row(
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp).fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -189,6 +266,7 @@ fun MapScreenUI(
 
                 FloatingActionButton(
                     onClick = {
+                        tempLocationCapture = myLocationOverlay?.myLocation
                         val uri = createImageUri(context)
                         if (uri != null) {
                             currentPhotoUri = uri
@@ -199,13 +277,58 @@ fun MapScreenUI(
                     modifier = Modifier.size(80.dp)
                 ) { Icon(Icons.Default.CameraAlt, null, Modifier.size(40.dp)) }
 
-                SmallRoundButton(Icons.Default.MyLocation, {})
+                SmallRoundButton(
+                    icon = Icons.Default.MyLocation,
+                    onClick = {
+                        val overlay = myLocationOverlay
+                        if (overlay != null && overlay.isMyLocationEnabled && overlay.myLocation != null) {
+                            mapView?.controller?.animateTo(overlay.myLocation)
+                            mapView?.controller?.setZoom(18.0)
+                            onMapPositionChange(overlay.myLocation, 18.0)
+                        } else {
+                            permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION))
+                        }
+                    }
+                )
             }
         }
     }
 }
 
-// --- EKRAN USTAWIEŃ ---
+// Reszta kodu (Galeria, Ustawienia, Funkcje pomocnicze) bez zmian
+@Composable
+fun GalleryScreenUI(photos: List<PhotoData>, onBack: () -> Unit) {
+    BackHandler { onBack() }
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
+            Text("Galeria", style = MaterialTheme.typography.headlineSmall)
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        if (photos.isEmpty()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text("Brak zdjęć.", style = MaterialTheme.typography.bodyLarge)
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 100.dp),
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(photos) { photo ->
+                    AsyncImage(
+                        model = photo.uri,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.aspectRatio(1f).clip(RoundedCornerShape(8.dp)).background(Color.LightGray)
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun SettingsScreenUI(onBack: () -> Unit) {
     BackHandler { onBack() }
@@ -215,7 +338,38 @@ fun SettingsScreenUI(onBack: () -> Unit) {
     }
 }
 
-// --- ELEMENTY POMOCNICZE ---
+fun createBlueDot(): android.graphics.Bitmap {
+    val size = 60
+    val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bitmap)
+    val paint = android.graphics.Paint().apply { isAntiAlias = true }
+    paint.color = android.graphics.Color.WHITE
+    canvas.drawCircle(size / 2f, size / 2f, size / 2f, paint)
+    paint.color = android.graphics.Color.BLUE
+    canvas.drawCircle(size / 2f, size / 2f, (size / 2f) - 5, paint)
+    return bitmap
+}
+
+fun createBlueArrow(): android.graphics.Bitmap {
+    val width = 100
+    val height = 100
+    val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bitmap)
+    val paint = android.graphics.Paint().apply {
+        color = android.graphics.Color.BLUE
+        style = android.graphics.Paint.Style.FILL
+        isAntiAlias = true
+    }
+    val path = android.graphics.Path()
+    path.moveTo(width / 2f, 0f)
+    path.lineTo(width.toFloat(), height.toFloat())
+    path.lineTo(width / 2f, height.toFloat() - 20)
+    path.lineTo(0f, height.toFloat())
+    path.close()
+    canvas.drawPath(path, paint)
+    return bitmap
+}
+
 @Composable
 fun SmallRoundButton(icon: ImageVector, onClick: () -> Unit) {
     Button(
