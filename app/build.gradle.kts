@@ -71,4 +71,5 @@ dependencies {
     implementation("androidx.room:room-runtime:$room_version")
     implementation("androidx.room:room-ktx:$room_version")
     kapt("androidx.room:room-compiler:$room_version")
+    implementation("com.github.MKergall:osmbonuspack:6.9.0")
 }

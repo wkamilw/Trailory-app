@@ -51,6 +51,7 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
+import org.osmdroid.bonuspack.clustering.RadiusMarkerClusterer
 
 // Nasz model UI (taki sam jak wcześniej, ale tworzony z bazy)
 data class PhotoData(
@@ -210,21 +211,48 @@ fun MapScreenUI(
                     }
                 },
                 update = { map ->
-                    val overlaysToRemove = map.overlays.filterIsInstance<Marker>()
-                    map.overlays.removeAll(overlaysToRemove)
+                    // 1. Usuwamy stare markery i stare klastry
+                    // Ale musimy uważać, żeby NIE usunąć nakładki lokalizacji (MyLocationNewOverlay)
+                    map.overlays.removeAll { it is Marker || it is RadiusMarkerClusterer }
+
+                    // 2. Tworzymy KLASTER (Grupowacz)
+                    val clusterer = RadiusMarkerClusterer(context)
+
+                    // Ustawiamy ikonę klastra (domyślna jest brzydka, użyjemy własnej logiki lub domyślnej z biblioteki)
+                    // Biblioteka wymaga ustawienia ikony bazowej, na której wypisuje liczbę.
+                    // Użyjemy prostej bitmapy.
+                    val clusterIcon = createBlueDot() // Możemy użyć naszej kropki jako tła
+                    clusterer.setIcon(clusterIcon)
+
+                    // Konfiguracja wyglądu tekstu na klastrze
+                    clusterer.textPaint.textSize = 40f
+                    clusterer.textPaint.color = android.graphics.Color.WHITE
+
+                    // 3. Tworzymy markery dla każdego zdjęcia i dodajemy DO KLASTRA (a nie do mapy!)
                     photos.forEach { photo ->
                         if (photo.location != null) {
                             val marker = Marker(map)
                             marker.position = photo.location
                             marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                             marker.title = "Kliknij, by zobaczyć zdjęcie"
+
+                            // Tutaj możesz też zmienić ikonę samej pinezki na ładniejszą, np. fioletową
+                            // marker.icon = ...
+
                             marker.setOnMarkerClickListener { _, _ ->
                                 selectedPhoto = photo
                                 true
                             }
-                            map.overlays.add(marker)
+
+                            // WAŻNE: Dodajemy do klastra!
+                            clusterer.add(marker)
                         }
                     }
+
+                    // 4. Na koniec dodajemy klaster do mapy
+                    map.overlays.add(clusterer)
+
+                    // Odświeżamy mapę
                     map.invalidate()
                 }
             )
@@ -385,4 +413,28 @@ fun createImageUri(context: Context): Uri? {
         put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Trailory-App")
     }
     return context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+}
+// Ikona klastra (Kółko, które pokazuje ile jest zdjęć w jednym miejscu)
+fun createClusterBitmap(count: Int): android.graphics.Bitmap {
+    val size = 100
+    val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bitmap)
+    val paint = android.graphics.Paint().apply { isAntiAlias = true }
+
+    // Rysujemy pomarańczowe kółko
+    paint.color = android.graphics.Color.parseColor("#FF9800") // Pomarańczowy
+    canvas.drawCircle(size / 2f, size / 2f, size / 2f, paint)
+
+    // Rysujemy białą liczbę w środku
+    paint.color = android.graphics.Color.WHITE
+    paint.textSize = 50f
+    paint.textAlign = android.graphics.Paint.Align.CENTER
+
+    // Centrowanie tekstu w pionie
+    val textHeight = paint.descent() - paint.ascent()
+    val textOffset = (textHeight / 2) - paint.descent()
+
+    canvas.drawText(count.toString(), size / 2f, (size / 2f) + textOffset, paint)
+
+    return bitmap
 }
