@@ -16,9 +16,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -32,7 +31,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
@@ -52,12 +53,25 @@ import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import org.osmdroid.bonuspack.clustering.RadiusMarkerClusterer
+import java.text.SimpleDateFormat
+import java.util.*
 
 // Nasz model UI (taki sam jak wcześniej, ale tworzony z bazy)
 data class PhotoData(
     val uri: Uri,
-    val location: GeoPoint?
+    val location: GeoPoint?,
+    val timestamp: Long = System.currentTimeMillis(),
+    val name: String = "Photo",
+    val size: Long = 0
 )
+
+enum class SortOption(val label: String) {
+    DATE_DESC("Data (Najnowsze)"),
+    DATE_ASC("Data (Najstarsze)"),
+    NAME("Nazwa"),
+    SIZE_DESC("Rozmiar (Duże)"),
+    SIZE_ASC("Rozmiar (Małe)")
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -321,37 +335,132 @@ fun MapScreenUI(
 }
 
 @Composable
-fun GalleryScreenUI(photos: List<PhotoData>, onBack: () -> Unit) {
-    BackHandler { onBack() }
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
-            Text("Galeria", style = MaterialTheme.typography.headlineSmall)
-        }
-        Spacer(modifier = Modifier.height(10.dp))
-        if (photos.isEmpty()) {
-            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Text("Brak zdjęć.", style = MaterialTheme.typography.bodyLarge)
-            }
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 100.dp),
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+fun PhotoItem(photo: PhotoData) {
+    val df = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth().height(100.dp),
+        shape = RoundedCornerShape(12.dp),
+        elevation = CardDefaults.cardElevation(2.dp)
+    ) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            AsyncImage(
+                model = photo.uri,
+                contentDescription = null,
+                modifier = Modifier.width(120.dp).fillMaxHeight(),
+                contentScale = ContentScale.Crop
+            )
+            Column(
+                modifier = Modifier.padding(12.dp).fillMaxHeight(),
+                verticalArrangement = Arrangement.SpaceBetween
             ) {
-                items(photos) { photo ->
-                    AsyncImage(
-                        model = photo.uri,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.aspectRatio(1f).clip(RoundedCornerShape(8.dp)).background(Color.LightGray)
-                    )
+                Column {
+                    Text(photo.name, fontWeight = FontWeight.Bold, maxLines = 1, fontSize = 14.sp)
+                    Text(df.format(Date(photo.timestamp)), fontSize = 11.sp, color = Color.Gray)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("${photo.size / 1024} KB", fontSize = 10.sp, color = Color.LightGray)
+                    photo.location?.let {
+                        Text("%.4f, %.4f".format(it.latitude, it.longitude), fontSize = 10.sp, color = Color.LightGray)
+                    }
                 }
             }
         }
     }
 }
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GalleryScreenUI(photos: List<PhotoData>, onBack: () -> Unit) {
+    BackHandler { onBack() }
+    var searchQuery by remember { mutableStateOf("") }
+    var sortOption by remember { mutableStateOf(SortOption.DATE_DESC) }
+    var showSortMenu by remember { mutableStateOf(false) }
+
+    // Filtering and sorting logic
+    val filteredPhotos = remember(photos, searchQuery, sortOption) {
+        photos.filter {
+            it.name.contains(searchQuery, ignoreCase = true) ||
+                    (it.location?.let { loc -> "${loc.latitude}, ${loc.longitude}".contains(searchQuery) } ?: false)
+        }.sortedWith { a, b ->
+            when (sortOption) {
+                SortOption.DATE_DESC -> b.timestamp.compareTo(a.timestamp)
+                SortOption.DATE_ASC -> a.timestamp.compareTo(b.timestamp)
+                SortOption.NAME -> a.name.compareTo(b.name)
+                SortOption.SIZE_DESC -> b.size.compareTo(a.size)
+                SortOption.SIZE_ASC -> a.size.compareTo(b.size)
+            }
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Galeria") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Wstecz") }
+                },
+                actions = {
+                    Box {
+                        IconButton(onClick = { showSortMenu = true }) {
+                            Icon(Icons.Default.Sort, "Sortuj")
+                        }
+                        DropdownMenu(
+                            expanded = showSortMenu,
+                            onDismissRequest = { showSortMenu = false }
+                        ) {
+                            SortOption.values().forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.label) },
+                                    onClick = {
+                                        sortOption = option
+                                        showSortMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            )
+        },
+        bottomBar = {
+            Surface(tonalElevation = 8.dp) {
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    placeholder = { Text("Szukaj zdjęć...") },
+                    leadingIcon = { Icon(Icons.Default.Search, null) },
+                    shape = RoundedCornerShape(24.dp),
+                    colors = TextFieldDefaults.colors(
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                        errorIndicatorColor = Color.Transparent
+                )
+                )
+            }
+        }
+    ) { padding ->
+        if (filteredPhotos.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Text("Brak zdjęć do wyświetlenia.", color = Color.Gray)
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(filteredPhotos) { photo ->
+                    PhotoItem(photo)
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 fun SettingsScreenUI(onBack: () -> Unit) {
