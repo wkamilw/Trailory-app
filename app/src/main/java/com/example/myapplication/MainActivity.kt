@@ -55,6 +55,7 @@ import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import org.osmdroid.bonuspack.clustering.RadiusMarkerClusterer
 import java.text.SimpleDateFormat
 import java.util.*
+import androidx.compose.foundation.clickable
 
 // Nasz model UI (taki sam jak wcześniej, ale tworzony z bazy)
 data class PhotoData(
