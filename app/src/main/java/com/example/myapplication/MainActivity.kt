@@ -516,12 +516,50 @@ fun GalleryScreenUI(photos: List<PhotoData>, onBack: () -> Unit) {
 
 @Composable
 fun SettingsScreenUI(onBack: () -> Unit) {
+    var isDarkMode by remember { mutableStateOf(false) } // Load from DataStore
+    var isMapDarkMode by remember { mutableStateOf(false) } // Load from DataStore
     BackHandler { onBack() }
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
-        Text("Ustawienia", style = MaterialTheme.typography.headlineSmall)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                //.verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, null)
+            }
+            Text("Ustawienia", style = MaterialTheme.typography.headlineSmall)
+            // Dark Mode Preference
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp)
+                    .clickable { isDarkMode = !isDarkMode },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Tryb ciemny aplikacji", style = MaterialTheme.typography.bodyLarge)
+                Switch(
+                    checked = isDarkMode,
+                    onCheckedChange = { isDarkMode = it }
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp)
+                    .clickable { isMapDarkMode = !isMapDarkMode },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Tryb ciemny mapy", style = MaterialTheme.typography.bodyLarge)
+                Switch(
+                    checked = isMapDarkMode,
+                    onCheckedChange = { isMapDarkMode = it }
+                )
+            }
+        }
     }
-}
 
 fun createBlueDot(): android.graphics.Bitmap {
     val size = 60
