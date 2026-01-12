@@ -169,6 +169,7 @@ fun MapScreenUI(
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var myLocationOverlay by remember { mutableStateOf<MyLocationNewOverlay?>(null) }
     var selectedPhoto by remember { mutableStateOf<PhotoData?>(null) }
+    var isGpsSignal by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -200,6 +201,7 @@ fun MapScreenUI(
                     MapView(ctx).apply {
                         setTileSource(TileSourceFactory.MAPNIK)
                         setMultiTouchControls(true)
+                        zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
                         controller.setZoom(initialZoom)
                         controller.setCenter(initialCenter)
                         addMapListener(object : MapListener {
@@ -270,7 +272,39 @@ fun MapScreenUI(
                     map.invalidate()
                 }
             )
+            LaunchedEffect(myLocationOverlay) {
+                while (true) {
+                    val location = myLocationOverlay?.myLocation
+                    isGpsSignal = (location != null) // Jeśli location nie jest null, to mamy sygnał!
+                    kotlinx.coroutines.delay(1000) // Czekamy 1 sekundę przed kolejnym sprawdzeniem
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd) // Ustawia po prawej na środku
+                    .padding(end = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Plus (+)
+                FloatingActionButton(
+                    onClick = { mapView?.controller?.zoomIn() },
+                    modifier = Modifier.size(50.dp),
+                    containerColor = Color.White,
+                    contentColor = Color.Black
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Przybliż")
+                }
 
+                // Minus (-)
+                FloatingActionButton(
+                    onClick = { mapView?.controller?.zoomOut() },
+                    modifier = Modifier.size(50.dp),
+                    containerColor = Color.White,
+                    contentColor = Color.Black
+                ) {
+                    Icon(Icons.Default.Remove, contentDescription = "Oddal")
+                }
+            }
             if (selectedPhoto != null) {
                 Dialog(onDismissRequest = { selectedPhoto = null }) {
                     Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().height(400.dp)) {
@@ -302,23 +336,40 @@ fun MapScreenUI(
             ) { Icon(Icons.Default.Settings, null) }
 
             Row(
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp).fillMaxWidth(),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 32.dp)
+                    .fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Przycisk Galerii (bez zmian)
                 SmallRoundButton(Icons.Default.Collections, onNavigateToGallery)
+
+                // --- PRZYCISK APARATU (ZMIENIONY) ---
                 FloatingActionButton(
                     onClick = {
-                        tempLocationCapture = myLocationOverlay?.myLocation
-                        val uri = createImageUri(context)
-                        if (uri != null) {
-                            currentPhotoUri = uri
-                            cameraLauncher.launch(uri)
+                        if (isGpsSignal) {
+                            // JEST SYGNAŁ: Robimy zdjęcie
+                            tempLocationCapture = myLocationOverlay?.myLocation
+                            val uri = createImageUri(context)
+                            if (uri != null) {
+                                currentPhotoUri = uri
+                                cameraLauncher.launch(uri)
+                            }
+                        } else {
+                            // BRAK SYGNAŁU: Wyświetlamy komunikat
+                            Toast.makeText(context, "Czekam na sygnał GPS...", Toast.LENGTH_SHORT).show()
                         }
                     },
-                    containerColor = MaterialTheme.colorScheme.primary,
+                    // Zmiana koloru: Niebieski (gdy jest GPS) / Szary (gdy brak)
+                    containerColor = if (isGpsSignal) MaterialTheme.colorScheme.primary else Color.Gray,
                     modifier = Modifier.size(80.dp)
-                ) { Icon(Icons.Default.CameraAlt, null, Modifier.size(40.dp)) }
+                ) {
+                    Icon(Icons.Default.CameraAlt, null, Modifier.size(40.dp))
+                }
+
+                // Przycisk Lokalizacji (bez zmian)
                 SmallRoundButton(Icons.Default.MyLocation, {
                     val overlay = myLocationOverlay
                     if (overlay != null && overlay.isMyLocationEnabled && overlay.myLocation != null) {
