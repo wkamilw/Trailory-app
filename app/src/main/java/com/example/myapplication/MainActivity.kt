@@ -186,6 +186,7 @@ fun MapScreenUI(
                     MapView(ctx).apply {
                         setTileSource(TileSourceFactory.MAPNIK)
                         setMultiTouchControls(true)
+                        zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
                         controller.setZoom(initialZoom)
                         controller.setCenter(initialCenter)
                         addMapListener(object : MapListener {
@@ -256,7 +257,32 @@ fun MapScreenUI(
                     map.invalidate()
                 }
             )
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd) // Ustawia po prawej na środku
+                    .padding(end = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Plus (+)
+                FloatingActionButton(
+                    onClick = { mapView?.controller?.zoomIn() },
+                    modifier = Modifier.size(50.dp),
+                    containerColor = Color.White,
+                    contentColor = Color.Black
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Przybliż")
+                }
 
+                // Minus (-)
+                FloatingActionButton(
+                    onClick = { mapView?.controller?.zoomOut() },
+                    modifier = Modifier.size(50.dp),
+                    containerColor = Color.White,
+                    contentColor = Color.Black
+                ) {
+                    Icon(Icons.Default.Remove, contentDescription = "Oddal")
+                }
+            }
             if (selectedPhoto != null) {
                 Dialog(onDismissRequest = { selectedPhoto = null }) {
                     Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().height(400.dp)) {
