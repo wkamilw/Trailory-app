@@ -59,8 +59,12 @@ import androidx.compose.foundation.clickable
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.map
+import androidx.compose.ui.window.DialogProperties
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
-// Nasz model UI (taki sam jak wcześniej, ale tworzony z bazy)
+// Model danych UI
 data class PhotoData(
     val uri: Uri,
     val location: GeoPoint?,
@@ -69,6 +73,7 @@ data class PhotoData(
     val size: Long = 0
 )
 
+// DataStore do ustawień
 private val Context.dataStore by preferencesDataStore("settings")
 
 object SettingsKeys {
@@ -77,27 +82,17 @@ object SettingsKeys {
 }
 
 class SettingsRepository(private val context: Context) {
-
-    val darkMode = context.dataStore.data.map {
-        it[SettingsKeys.DARK_MODE] ?: false
-    }
-
-    val mapDark = context.dataStore.data.map {
-        it[SettingsKeys.MAP_DARK] ?: false
-    }
+    val darkMode = context.dataStore.data.map { it[SettingsKeys.DARK_MODE] ?: false }
+    val mapDark = context.dataStore.data.map { it[SettingsKeys.MAP_DARK] ?: false }
 
     suspend fun setDarkMode(value: Boolean) {
-        context.dataStore.edit {
-            it[SettingsKeys.DARK_MODE] = value
-        }
+        context.dataStore.edit { it[SettingsKeys.DARK_MODE] = value }
     }
-
     suspend fun setMapDark(value: Boolean) {
-        context.dataStore.edit {
-            it[SettingsKeys.MAP_DARK] = value
-        }
+        context.dataStore.edit { it[SettingsKeys.MAP_DARK] = value }
     }
 }
+
 enum class SortOption(val label: String) {
     DATE_DESC("Data (Najnowsze)"),
     DATE_ASC("Data (Najstarsze)"),
@@ -116,24 +111,12 @@ class MainActivity : ComponentActivity() {
         Configuration.getInstance().userAgentValue = packageName
         enableEdgeToEdge()
 
-        // Inicjalizacja bazy danych
         val database = AppDatabase.getDatabase(this)
-
         val settingsRepo = SettingsRepository(this)
 
         setContent {
+            HideSystemBars()
             val isDark by settingsRepo.darkMode.collectAsState(initial = false)
-
-            MyApplicationTheme(darkTheme = isDark) {
-                TrailoryNavigation(
-                    database = database,
-                    settingsRepo = settingsRepo
-                )
-            }
-
-        setContent {
-            val isDark by settingsRepo.darkMode.collectAsState(initial = false)
-
             MyApplicationTheme(darkTheme = isDark) {
                 TrailoryNavigation(database, settingsRepo)
             }
@@ -141,79 +124,79 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-
 enum class AppScreen { MAP, GALLERY, SETTINGS }
 
-    @Composable
-    fun TrailoryNavigation(
-        database: AppDatabase,
-        settingsRepo: SettingsRepository
-    ) {
-        var currentScreen by remember { mutableStateOf(AppScreen.MAP) }
-        val scope = rememberCoroutineScope()
+@Composable
+fun TrailoryNavigation(
+    database: AppDatabase,
+    settingsRepo: SettingsRepository
+) {
+    var currentScreen by remember { mutableStateOf(AppScreen.MAP) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
-        // ✅ COLLECT SETTINGS HERE
-        val isMapDark by settingsRepo.mapDark.collectAsState(initial = false)
+    val isMapDark by settingsRepo.mapDark.collectAsState(initial = false)
+    val photosEntityList by database.photoDao().getAllPhotos().collectAsState(initial = emptyList())
 
-        val photosEntityList by database
-            .photoDao()
-            .getAllPhotos()
-            .collectAsState(initial = emptyList())
-
-        val photos = photosEntityList.map { entity ->
-            PhotoData(
-                uri = Uri.parse(entity.uriString),
-                location = entity.latitude?.let { lat ->
-                    entity.longitude?.let { lon ->
-                        GeoPoint(lat, lon)
-                    }
-                }
-            )
-        }
-
-        var mapCenter by remember { mutableStateOf(GeoPoint(52.23, 21.01)) }
-        var mapZoom by remember { mutableStateOf(15.0) }
-
-        when (currentScreen) {
-            AppScreen.MAP -> MapScreenUI(
-                photos = photos,
-                onNavigateToGallery = { currentScreen = AppScreen.GALLERY },
-                onNavigateToSettings = { currentScreen = AppScreen.SETTINGS },
-                onPhotoCaptured = { photoData ->
-                    scope.launch {
-                        database.photoDao().insertPhoto(
-                            PhotoEntity(
-                                uriString = photoData.uri.toString(),
-                                latitude = photoData.location?.latitude,
-                                longitude = photoData.location?.longitude
-                            )
-                        )
-                    }
-                },
-                initialCenter = mapCenter,
-                initialZoom = mapZoom,
-                onMapPositionChange = { newCenter, newZoom ->
-                    mapCenter = newCenter
-                    mapZoom = newZoom
-                },
-                isMapDark = isMapDark   //
-            )
-
-            AppScreen.GALLERY -> GalleryScreenUI(
-                photos = photos,
-                onBack = { currentScreen = AppScreen.MAP }
-            )
-
-            AppScreen.SETTINGS -> SettingsScreenUI(
-                settingsRepo = settingsRepo,
-                onBack = { currentScreen = AppScreen.MAP }
-            )
-        }
+    val photos = photosEntityList.map { entity ->
+        PhotoData(
+            uri = Uri.parse(entity.uriString),
+            location = if (entity.latitude != null && entity.longitude != null) {
+                GeoPoint(entity.latitude, entity.longitude)
+            } else null,
+            name = entity.title,
+            timestamp = entity.timestamp,
+            size = entity.size
+        )
     }
 
-// --- RESZTA UI (MapScreen, GalleryScreen itp.) POZOSTAJE TAKA SAMA JAK WCZEŚNIEJ ---
-// (Wklej tutaj całą resztę kodu z poprzedniego rozwiązania, zaczynając od fun MapScreenUI...)
-// DLA UŁATWIENIA WKLEJAM CAŁOŚĆ PONIŻEJ:
+    var mapCenter by remember { mutableStateOf(GeoPoint(52.23, 21.01)) }
+    var mapZoom by remember { mutableStateOf(15.0) }
+
+    when (currentScreen) {
+        AppScreen.MAP -> MapScreenUI(
+            photos = photos,
+            onNavigateToGallery = { currentScreen = AppScreen.GALLERY },
+            onNavigateToSettings = { currentScreen = AppScreen.SETTINGS },
+            onPhotoCaptured = { photoData ->
+                scope.launch {
+                    var fileSize: Long = 0
+                    try {
+                        context.contentResolver.openFileDescriptor(photoData.uri, "r")?.use {
+                            fileSize = it.statSize
+                        }
+                    } catch (e: Exception) { e.printStackTrace() }
+
+                    database.photoDao().insertPhoto(
+                        PhotoEntity(
+                            uriString = photoData.uri.toString(),
+                            latitude = photoData.location?.latitude,
+                            longitude = photoData.location?.longitude,
+                            title = photoData.name,
+                            timestamp = photoData.timestamp,
+                            size = fileSize
+                        )
+                    )
+                }
+            },
+            initialCenter = mapCenter,
+            initialZoom = mapZoom,
+            onMapPositionChange = { newCenter, newZoom ->
+                mapCenter = newCenter
+                mapZoom = newZoom
+            },
+            isMapDark = isMapDark
+        )
+        AppScreen.GALLERY -> GalleryScreenUI(
+            photos = photos,
+            onBack = { currentScreen = AppScreen.MAP }
+        )
+        AppScreen.SETTINGS -> SettingsScreenUI(
+            settingsRepo = settingsRepo,
+            onBack = { currentScreen = AppScreen.MAP }
+        )
+    }
+}
 
 @Composable
 fun MapScreenUI(
@@ -224,14 +207,20 @@ fun MapScreenUI(
     initialCenter: GeoPoint,
     initialZoom: Double,
     onMapPositionChange: (GeoPoint, Double) -> Unit,
-    isMapDark: Boolean) {
+    isMapDark: Boolean
+) {
     val context = LocalContext.current
     var currentPhotoUri by remember { mutableStateOf<Uri?>(null) }
     var tempLocationCapture by remember { mutableStateOf<GeoPoint?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var myLocationOverlay by remember { mutableStateOf<MyLocationNewOverlay?>(null) }
+
     var selectedPhoto by remember { mutableStateOf<PhotoData?>(null) }
     var isGpsSignal by remember { mutableStateOf(false) }
+
+    // Zmienne do okna zapisywania
+    var showNameDialog by remember { mutableStateOf(false) }
+    var photoNameInput by remember { mutableStateOf("") }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -249,36 +238,48 @@ fun MapScreenUI(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
         if (success && currentPhotoUri != null) {
-            Toast.makeText(context, "Zapisano w bazie!", Toast.LENGTH_SHORT).show()
-            val newData = PhotoData(currentPhotoUri!!, tempLocationCapture)
-            onPhotoCaptured(newData)
+            // Po zrobieniu zdjęcia otwieramy dialog z podglądem i nazwą
+            photoNameInput = ""
+            showNameDialog = true
         }
     }
-
+    // Definicja ciemnego stylu mapy (CartoDB Dark Matter)
+    val darkTileSource = remember {
+        object : org.osmdroid.tileprovider.tilesource.XYTileSource(
+            "CartoDark",
+            0, 20, 256, ".png",
+            arrayOf(
+                "https://a.basemaps.cartocdn.com/dark_all/",
+                "https://b.basemaps.cartocdn.com/dark_all/",
+                "https://c.basemaps.cartocdn.com/dark_all/"
+            )
+        ) {
+            override fun getCopyrightNotice() = "© OpenStreetMap contributors, © CARTO"
+        }
+    }
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+
+            // --- MAPA ---
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     MapView(ctx).apply {
                         setTileSource(
-                            if (isMapDark)
-                                TileSourceFactory.USGS_SAT
-                            else
-                                TileSourceFactory.MAPNIK
+                            if (isMapDark) darkTileSource else TileSourceFactory.MAPNIK
                         )
                         setMultiTouchControls(true)
                         zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
                         controller.setZoom(initialZoom)
                         controller.setCenter(initialCenter)
                         addMapListener(object : MapListener {
-                            override fun onScroll(event: ScrollEvent?): Boolean {
+                            override fun onScroll(event: ScrollEvent?) = run {
                                 onMapPositionChange(GeoPoint(mapCenter.latitude, mapCenter.longitude), zoomLevelDouble)
-                                return true
+                                true
                             }
-                            override fun onZoom(event: ZoomEvent?): Boolean {
+                            override fun onZoom(event: ZoomEvent?) = run {
                                 onMapPositionChange(GeoPoint(mapCenter.latitude, mapCenter.longitude), zoomLevelDouble)
-                                return true
+                                true
                             }
                         })
                         val overlay = MyLocationNewOverlay(GpsMyLocationProvider(ctx), this)
@@ -294,98 +295,189 @@ fun MapScreenUI(
                     }
                 },
                 update = { map ->
-                    // 1. Usuwamy stare markery i stare klastry
-                    // Ale musimy uważać, żeby NIE usunąć nakładki lokalizacji (MyLocationNewOverlay)
                     map.overlays.removeAll { it is Marker || it is RadiusMarkerClusterer }
 
-                    // 2. Tworzymy KLASTER (Grupowacz)
                     val clusterer = RadiusMarkerClusterer(context)
-
-                    // Ustawiamy ikonę klastra (domyślna jest brzydka, użyjemy własnej logiki lub domyślnej z biblioteki)
-                    // Biblioteka wymaga ustawienia ikony bazowej, na której wypisuje liczbę.
-                    // Użyjemy prostej bitmapy.
-                    val clusterIcon = createBlueDot() // Możemy użyć naszej kropki jako tła
+                    val clusterIcon = createBlueDot()
                     clusterer.setIcon(clusterIcon)
-
-                    // Konfiguracja wyglądu tekstu na klastrze
                     clusterer.textPaint.textSize = 40f
                     clusterer.textPaint.color = android.graphics.Color.WHITE
 
-                    // 3. Tworzymy markery dla każdego zdjęcia i dodajemy DO KLASTRA (a nie do mapy!)
                     photos.forEach { photo ->
                         if (photo.location != null) {
                             val marker = Marker(map)
                             marker.position = photo.location
                             marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                            marker.title = "Kliknij, by zobaczyć zdjęcie"
-
-                            // Tutaj możesz też zmienić ikonę samej pinezki na ładniejszą, np. fioletową
-                            // marker.icon = ...
-
+                            marker.title = photo.name
                             marker.setOnMarkerClickListener { _, _ ->
                                 selectedPhoto = photo
                                 true
                             }
-
-                            // WAŻNE: Dodajemy do klastra!
                             clusterer.add(marker)
                         }
                     }
-
-                    // 4. Na koniec dodajemy klaster do mapy
                     map.overlays.add(clusterer)
-
-                    // Odświeżamy mapę
                     map.invalidate()
                 }
             )
+
+            // --- NOWE OKNO ZAPISYWANIA (PODGLĄD + NAZWA) ---
+            if (showNameDialog && currentPhotoUri != null) {
+                Dialog(
+                    onDismissRequest = {
+                        // Puste - blokujemy zamykanie klawiszem wstecz, jeśli chcesz
+                        // Ale tutaj ważniejsze jest properties poniżej
+                    },
+                    properties = DialogProperties(
+                        dismissOnBackPress = true,
+                        dismissOnClickOutside = false // TO BLOKUJE KLIKANIE W TŁO
+                    )
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .wrapContentHeight() // Dopasuj wysokość do zawartości
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "Zapisz zdjęcie",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            // PODGLĄD ZDJĘCIA
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(250.dp) // Wysokość podglądu
+                            ) {
+                                AsyncImage(
+                                    model = currentPhotoUri,
+                                    contentDescription = "Podgląd",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            // POLE TEKSTOWE
+                            OutlinedTextField(
+                                value = photoNameInput,
+                                onValueChange = { photoNameInput = it },
+                                label = { Text("Nazwa miejsca") },
+                                placeholder = { Text("np. Stary dąb") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Spacer(modifier = Modifier.height(24.dp))
+
+                            // PRZYCISKI
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        // Anuluj - nie zapisujemy do bazy
+                                        showNameDialog = false
+                                    }
+                                ) {
+                                    Text("Anuluj")
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        // Zapisz
+                                        val finalName = if (photoNameInput.isBlank()) "Bez nazwy" else photoNameInput
+                                        val newData = PhotoData(
+                                            uri = currentPhotoUri!!,
+                                            location = tempLocationCapture,
+                                            name = finalName,
+                                            timestamp = System.currentTimeMillis()
+                                        )
+                                        onPhotoCaptured(newData)
+                                        Toast.makeText(context, "Zapisano: $finalName", Toast.LENGTH_SHORT).show()
+                                        showNameDialog = false
+                                    }
+                                ) {
+                                    Text("Zapisz")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // -----------------------------------------------------
+
             LaunchedEffect(myLocationOverlay) {
                 while (true) {
                     val location = myLocationOverlay?.myLocation
-                    isGpsSignal = (location != null) // Jeśli location nie jest null, to mamy sygnał!
-                    kotlinx.coroutines.delay(1000) // Czekamy 1 sekundę przed kolejnym sprawdzeniem
+                    isGpsSignal = (location != null)
+                    kotlinx.coroutines.delay(1000)
                 }
             }
+
+            // Przyciski ZOOM
             Column(
                 modifier = Modifier
-                    .align(Alignment.CenterEnd) // Ustawia po prawej na środku
+                    .align(Alignment.CenterEnd)
                     .padding(end = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Plus (+)
                 FloatingActionButton(
                     onClick = { mapView?.controller?.zoomIn() },
                     modifier = Modifier.size(50.dp),
-                    containerColor = Color.White,
-                    contentColor = Color.Black
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "Przybliż")
-                }
+                    // ZMIANA KOLORÓW NA MOTYW
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.onSurface
+                ) { Icon(Icons.Default.Add, "Przybliż") }
 
-                // Minus (-)
                 FloatingActionButton(
                     onClick = { mapView?.controller?.zoomOut() },
                     modifier = Modifier.size(50.dp),
-                    containerColor = Color.White,
-                    contentColor = Color.Black
-                ) {
-                    Icon(Icons.Default.Remove, contentDescription = "Oddal")
-                }
+                    // ZMIANA KOLORÓW NA MOTYW
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.onSurface
+                ) { Icon(Icons.Default.Remove, "Oddal") }
             }
+
+            // Podgląd zdjęcia z mapy (kliknięcie w marker)
             if (selectedPhoto != null) {
                 Dialog(onDismissRequest = { selectedPhoto = null }) {
-                    Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().height(400.dp)) {
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            AsyncImage(
-                                model = selectedPhoto!!.uri,
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
+                    Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().wrapContentHeight()) {
+                        Column {
+                            Box(modifier = Modifier.fillMaxWidth().height(300.dp)) {
+                                AsyncImage(
+                                    model = selectedPhoto!!.uri,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                IconButton(
+                                    onClick = { selectedPhoto = null },
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(8.dp)
+                                        // Tło półprzezroczyste, pasuje do każdego trybu
+                                        .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f), CircleShape)
+                                ) {
+                                    Icon(Icons.Default.Close, "Zamknij", tint = Color.White)
+                                }
+                            }
+                            Text(
+                                text = selectedPhoto!!.name,
+                                style = MaterialTheme.typography.headlineSmall,
+                                modifier = Modifier.padding(16.dp)
                             )
-                            IconButton(
-                                onClick = { selectedPhoto = null },
-                                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                            ) { Icon(Icons.Default.Close, "Zamknij", tint = Color.White) }
                         }
                     }
                 }
@@ -399,8 +491,15 @@ fun MapScreenUI(
 
             IconButton(
                 onClick = onNavigateToSettings,
-                modifier = Modifier.align(Alignment.TopEnd).padding(16.dp).background(Color.White.copy(alpha = 0.8f), CircleShape)
-            ) { Icon(Icons.Default.Settings, null) }
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp)
+                    // ZMIANA: Tło dostosowane do motywu
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), CircleShape)
+            ) {
+                // Ikona dostosowana do motywu
+                Icon(Icons.Default.Settings, null, tint = MaterialTheme.colorScheme.onSurface)
+            }
 
             Row(
                 modifier = Modifier
@@ -410,14 +509,11 @@ fun MapScreenUI(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Przycisk Galerii (bez zmian)
                 SmallRoundButton(Icons.Default.Collections, onNavigateToGallery)
 
-                // --- PRZYCISK APARATU (ZMIENIONY) ---
                 FloatingActionButton(
                     onClick = {
                         if (isGpsSignal) {
-                            // JEST SYGNAŁ: Robimy zdjęcie
                             tempLocationCapture = myLocationOverlay?.myLocation
                             val uri = createImageUri(context)
                             if (uri != null) {
@@ -425,18 +521,13 @@ fun MapScreenUI(
                                 cameraLauncher.launch(uri)
                             }
                         } else {
-                            // BRAK SYGNAŁU: Wyświetlamy komunikat
                             Toast.makeText(context, "Czekam na sygnał GPS...", Toast.LENGTH_SHORT).show()
                         }
                     },
-                    // Zmiana koloru: Niebieski (gdy jest GPS) / Szary (gdy brak)
                     containerColor = if (isGpsSignal) MaterialTheme.colorScheme.primary else Color.Gray,
                     modifier = Modifier.size(80.dp)
-                ) {
-                    Icon(Icons.Default.CameraAlt, null, Modifier.size(40.dp))
-                }
+                ) { Icon(Icons.Default.CameraAlt, null, Modifier.size(40.dp)) }
 
-                // Przycisk Lokalizacji (bez zmian)
                 SmallRoundButton(Icons.Default.MyLocation, {
                     val overlay = myLocationOverlay
                     if (overlay != null && overlay.isMyLocationEnabled && overlay.myLocation != null) {
@@ -452,10 +543,10 @@ fun MapScreenUI(
     }
 }
 
+// --- Galeria ---
 @Composable
 fun PhotoItem(photo: PhotoData) {
     val df = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
-
     Card(
         modifier = Modifier.fillMaxWidth().height(100.dp),
         shape = RoundedCornerShape(12.dp),
@@ -486,6 +577,7 @@ fun PhotoItem(photo: PhotoData) {
         }
     }
 }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GalleryScreenUI(
@@ -497,6 +589,9 @@ fun GalleryScreenUI(
     var searchQuery by remember { mutableStateOf("") }
     var sortOption by remember { mutableStateOf(SortOption.DATE_DESC) }
     var showSortMenu by remember { mutableStateOf(false) }
+
+    // Tworzymy "porównywarkę" dla języka polskiego
+    val collator = remember { java.text.Collator.getInstance(java.util.Locale("pl", "PL")) }
 
     // 🔍 FILTROWANIE + SORTOWANIE
     val filteredPhotos = remember(photos, searchQuery, sortOption) {
@@ -511,7 +606,8 @@ fun GalleryScreenUI(
                 when (sortOption) {
                     SortOption.DATE_DESC -> b.timestamp.compareTo(a.timestamp)
                     SortOption.DATE_ASC -> a.timestamp.compareTo(b.timestamp)
-                    SortOption.NAME -> a.name.compareTo(b.name)
+                    // Sortowanie po nazwie z uwzględnieniem polskich znaków
+                    SortOption.NAME -> collator.compare(a.name, b.name)
                     SortOption.SIZE_DESC -> b.size.compareTo(a.size)
                     SortOption.SIZE_ASC -> a.size.compareTo(b.size)
                 }
@@ -520,53 +616,64 @@ fun GalleryScreenUI(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Galeria") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, null)
-                    }
-                },
-                actions = {
-                    Box {
-                        IconButton(onClick = { showSortMenu = true }) {
-                            Icon(Icons.Default.Sort, null)
+            // ZMIANA: Kolumna zawiera teraz i Belkę i Wyszukiwarkę
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface) // Tło zgodne z motywem
+            ) {
+                TopAppBar(
+                    title = { Text("Galeria") },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Default.ArrowBack, null)
                         }
-                        DropdownMenu(
-                            expanded = showSortMenu,
-                            onDismissRequest = { showSortMenu = false }
-                        ) {
-                            SortOption.values().forEach {
-                                DropdownMenuItem(
-                                    text = { Text(it.label) },
-                                    onClick = {
-                                        sortOption = it
-                                        showSortMenu = false
-                                    }
-                                )
+                    },
+                    actions = {
+                        Box {
+                            IconButton(onClick = { showSortMenu = true }) {
+                                Icon(Icons.Default.Sort, null)
+                            }
+                            DropdownMenu(
+                                expanded = showSortMenu,
+                                onDismissRequest = { showSortMenu = false }
+                            ) {
+                                SortOption.values().forEach {
+                                    DropdownMenuItem(
+                                        text = { Text(it.label) },
+                                        onClick = {
+                                            sortOption = it
+                                            showSortMenu = false
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
-                }
-            )
-        },
-
-        bottomBar = {
-            TextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                placeholder = { Text("Szukaj po nazwie lub lokalizacji...") },
-                leadingIcon = { Icon(Icons.Default.Search, null) },
-                shape = RoundedCornerShape(24.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent
                 )
-            )
+
+                // WYSZUKIWARKA NA GÓRZE
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    placeholder = { Text("Szukaj po nazwie lub lokalizacji...") },
+                    leadingIcon = { Icon(Icons.Default.Search, null) },
+                    shape = RoundedCornerShape(24.dp),
+                    colors = TextFieldDefaults.colors(
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
+                    ),
+                    singleLine = true
+                )
+
+                // Opcjonalnie: cienka linia oddzielająca
+                HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
+            }
         }
+        // USUNĄŁEM bottomBar!
     ) { padding ->
         if (filteredPhotos.isEmpty()) {
             Box(
@@ -589,72 +696,80 @@ fun GalleryScreenUI(
     }
 }
 
+// --- Settings UI ---
+@OptIn(ExperimentalMaterial3Api::class) // Potrzebne do TopAppBar
 @Composable
 fun SettingsScreenUI(
     settingsRepo: SettingsRepository,
     onBack: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    // Pobieramy stany ustawień
     val darkMode by settingsRepo.darkMode.collectAsState(false)
     val mapDark by settingsRepo.mapDark.collectAsState(false)
 
     BackHandler { onBack() }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-
-        IconButton(onClick = onBack) {
-            Icon(Icons.Default.ArrowBack, null)
+    // Używamy Scaffold - on automatycznie ustawia tło (background)
+    // i kolor tekstu (onBackground) zgodnie z wybranym motywem (Ciemny/Jasny)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Ustawienia") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Powrót")
+                    }
+                }
+            )
         }
-
-        Text("Ustawienia", style = MaterialTheme.typography.headlineSmall)
-
-        Spacer(Modifier.height(16.dp))
-
-        SettingRow(
-            title = "Tryb ciemny aplikacji",
-            checked = darkMode
+    ) { padding ->
+        // Zawartość ustawień
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding) // Uwzględniamy pasek górny
+                .padding(16.dp)
         ) {
-            scope.launch {
-                settingsRepo.setDarkMode(it)
+            SettingRow(
+                title = "Tryb ciemny aplikacji",
+                checked = darkMode
+            ) {
+                scope.launch {
+                    settingsRepo.setDarkMode(it)
+                }
             }
-        }
 
-        SettingRow(
-            title = "Tryb ciemny mapy",
-            checked = mapDark
-        ) {
-            scope.launch {
-                settingsRepo.setMapDark(it)
+            // Opcjonalnie: Linia oddzielająca
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            SettingRow(
+                title = "Tryb ciemny mapy",
+                checked = mapDark
+            ) {
+                scope.launch {
+                    settingsRepo.setMapDark(it)
+                }
             }
+
+            // Tutaj możesz dodawać kolejne opcje w przyszłości
         }
     }
 }
 
 @Composable
-fun SettingRow(
-    title: String,
-    checked: Boolean,
-    onChange: (Boolean) -> Unit
-) {
+fun SettingRow(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 12.dp),
+        Modifier.fillMaxWidth().padding(vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(title)
-        Switch(
-            checked = checked,
-            onCheckedChange = onChange
-        )
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 
+// --- Funkcje pomocnicze (Helpers) ---
 fun createBlueDot(): android.graphics.Bitmap {
     val size = 60
     val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
@@ -693,10 +808,16 @@ fun SmallRoundButton(icon: ImageVector, onClick: () -> Unit) {
         onClick = onClick,
         shape = CircleShape,
         contentPadding = PaddingValues(0.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = Color.White),
+        // ZMIANA: Używamy kolorów z motywu, a nie na sztywno White/Black
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.surface, // Biały lub Ciemny
+            contentColor = MaterialTheme.colorScheme.onSurface // Czarny lub Biały
+        ),
         elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp),
         modifier = Modifier.size(60.dp)
-    ) { Icon(icon, null, tint = Color.Black, modifier = Modifier.size(30.dp)) }
+    ) {
+        Icon(icon, null, modifier = Modifier.size(30.dp))
+    }
 }
 
 fun createImageUri(context: Context): Uri? {
@@ -707,27 +828,38 @@ fun createImageUri(context: Context): Uri? {
     }
     return context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
 }
-// Ikona klastra (Kółko, które pokazuje ile jest zdjęć w jednym miejscu)
+
 fun createClusterBitmap(count: Int): android.graphics.Bitmap {
     val size = 100
     val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
     val canvas = android.graphics.Canvas(bitmap)
     val paint = android.graphics.Paint().apply { isAntiAlias = true }
-
-    // Rysujemy pomarańczowe kółko
-    paint.color = android.graphics.Color.parseColor("#FF9800") // Pomarańczowy
+    paint.color = android.graphics.Color.parseColor("#FF9800")
     canvas.drawCircle(size / 2f, size / 2f, size / 2f, paint)
-
-    // Rysujemy białą liczbę w środku
     paint.color = android.graphics.Color.WHITE
     paint.textSize = 50f
     paint.textAlign = android.graphics.Paint.Align.CENTER
-
-    // Centrowanie tekstu w pionie
     val textHeight = paint.descent() - paint.ascent()
     val textOffset = (textHeight / 2) - paint.descent()
-
     canvas.drawText(count.toString(), size / 2f, (size / 2f) + textOffset, paint)
-
     return bitmap
-}}
+}
+@Composable
+fun HideSystemBars() {
+    val context = LocalContext.current
+    val window = (context as? android.app.Activity)?.window
+
+    if (window != null) {
+        // Uruchamiamy efekt uboczny (Side Effect), który wykona się po załadowaniu widoku
+        LaunchedEffect(Unit) {
+            val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+
+            // Ustawiamy zachowanie: paski pojawią się na chwilę przy przesunięciu krawędzi (swipe)
+            windowInsetsController.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+
+            // Ukrywamy paski systemowe (Górny i Dolny)
+            windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+}

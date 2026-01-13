@@ -73,4 +73,5 @@ dependencies {
     kapt("androidx.room:room-compiler:$room_version")
     implementation("com.github.MKergall:osmbonuspack:6.9.0")
     implementation(libs.androidx.datastore.preferences)
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
 }
