@@ -56,6 +56,9 @@ import org.osmdroid.bonuspack.clustering.RadiusMarkerClusterer
 import java.text.SimpleDateFormat
 import java.util.*
 import androidx.compose.foundation.clickable
+import androidx.datastore.preferences.core.*
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.flow.map
 
 // Nasz model UI (taki sam jak wcześniej, ale tworzony z bazy)
 data class PhotoData(
@@ -66,6 +69,35 @@ data class PhotoData(
     val size: Long = 0
 )
 
+private val Context.dataStore by preferencesDataStore("settings")
+
+object SettingsKeys {
+    val DARK_MODE = booleanPreferencesKey("dark_mode")
+    val MAP_DARK = booleanPreferencesKey("map_dark")
+}
+
+class SettingsRepository(private val context: Context) {
+
+    val darkMode = context.dataStore.data.map {
+        it[SettingsKeys.DARK_MODE] ?: false
+    }
+
+    val mapDark = context.dataStore.data.map {
+        it[SettingsKeys.MAP_DARK] ?: false
+    }
+
+    suspend fun setDarkMode(value: Boolean) {
+        context.dataStore.edit {
+            it[SettingsKeys.DARK_MODE] = value
+        }
+    }
+
+    suspend fun setMapDark(value: Boolean) {
+        context.dataStore.edit {
+            it[SettingsKeys.MAP_DARK] = value
+        }
+    }
+}
 enum class SortOption(val label: String) {
     DATE_DESC("Data (Najnowsze)"),
     DATE_ASC("Data (Najstarsze)"),
@@ -87,68 +119,97 @@ class MainActivity : ComponentActivity() {
         // Inicjalizacja bazy danych
         val database = AppDatabase.getDatabase(this)
 
+        val settingsRepo = SettingsRepository(this)
+
         setContent {
-            MyApplicationTheme {
-                TrailoryNavigation(database)
+            val isDark by settingsRepo.darkMode.collectAsState(initial = false)
+
+            MyApplicationTheme(darkTheme = isDark) {
+                TrailoryNavigation(
+                    database = database,
+                    settingsRepo = settingsRepo
+                )
+            }
+
+        setContent {
+            val isDark by settingsRepo.darkMode.collectAsState(initial = false)
+
+            MyApplicationTheme(darkTheme = isDark) {
+                TrailoryNavigation(database, settingsRepo)
             }
         }
     }
 }
 
+
 enum class AppScreen { MAP, GALLERY, SETTINGS }
 
-@Composable
-fun TrailoryNavigation(database: AppDatabase) {
-    var currentScreen by remember { mutableStateOf(AppScreen.MAP) }
-    val scope = rememberCoroutineScope() // Potrzebne do zapisu w tle
+    @Composable
+    fun TrailoryNavigation(
+        database: AppDatabase,
+        settingsRepo: SettingsRepository
+    ) {
+        var currentScreen by remember { mutableStateOf(AppScreen.MAP) }
+        val scope = rememberCoroutineScope()
 
-    // --- KLUCZOWA ZMIANA: CZYTANIE Z BAZY ---
-    // Pobieramy listę 'Entity' z bazy i zamieniamy ją na żywo na naszą listę 'PhotoData'
-    val photosEntityList by database.photoDao().getAllPhotos().collectAsState(initial = emptyList())
+        // ✅ COLLECT SETTINGS HERE
+        val isMapDark by settingsRepo.mapDark.collectAsState(initial = false)
 
-    // Konwersja danych z bazy na format używany w UI
-    val photos = photosEntityList.map { entity ->
-        val loc = if (entity.latitude != null && entity.longitude != null) {
-            GeoPoint(entity.latitude, entity.longitude)
-        } else null
-        PhotoData(Uri.parse(entity.uriString), loc)
-    }
+        val photosEntityList by database
+            .photoDao()
+            .getAllPhotos()
+            .collectAsState(initial = emptyList())
 
-    var mapCenter by remember { mutableStateOf(GeoPoint(52.23, 21.01)) }
-    var mapZoom by remember { mutableStateOf(15.0) }
-
-    when (currentScreen) {
-        AppScreen.MAP -> MapScreenUI(
-            photos = photos, // Przekazujemy listę z bazy!
-            onNavigateToGallery = { currentScreen = AppScreen.GALLERY },
-            onNavigateToSettings = { currentScreen = AppScreen.SETTINGS },
-            onPhotoCaptured = { photoData ->
-                // ZAPIS DO BAZY (w tle)
-                scope.launch {
-                    val entity = PhotoEntity(
-                        uriString = photoData.uri.toString(),
-                        latitude = photoData.location?.latitude,
-                        longitude = photoData.location?.longitude
-                    )
-                    database.photoDao().insertPhoto(entity)
+        val photos = photosEntityList.map { entity ->
+            PhotoData(
+                uri = Uri.parse(entity.uriString),
+                location = entity.latitude?.let { lat ->
+                    entity.longitude?.let { lon ->
+                        GeoPoint(lat, lon)
+                    }
                 }
-            },
-            initialCenter = mapCenter,
-            initialZoom = mapZoom,
-            onMapPositionChange = { newCenter, newZoom ->
-                mapCenter = newCenter
-                mapZoom = newZoom
-            }
-        )
-        AppScreen.GALLERY -> GalleryScreenUI(
-            photos = photos, // Lista z bazy
-            onBack = { currentScreen = AppScreen.MAP }
-        )
-        AppScreen.SETTINGS -> SettingsScreenUI(
-            onBack = { currentScreen = AppScreen.MAP }
-        )
+            )
+        }
+
+        var mapCenter by remember { mutableStateOf(GeoPoint(52.23, 21.01)) }
+        var mapZoom by remember { mutableStateOf(15.0) }
+
+        when (currentScreen) {
+            AppScreen.MAP -> MapScreenUI(
+                photos = photos,
+                onNavigateToGallery = { currentScreen = AppScreen.GALLERY },
+                onNavigateToSettings = { currentScreen = AppScreen.SETTINGS },
+                onPhotoCaptured = { photoData ->
+                    scope.launch {
+                        database.photoDao().insertPhoto(
+                            PhotoEntity(
+                                uriString = photoData.uri.toString(),
+                                latitude = photoData.location?.latitude,
+                                longitude = photoData.location?.longitude
+                            )
+                        )
+                    }
+                },
+                initialCenter = mapCenter,
+                initialZoom = mapZoom,
+                onMapPositionChange = { newCenter, newZoom ->
+                    mapCenter = newCenter
+                    mapZoom = newZoom
+                },
+                isMapDark = isMapDark   //
+            )
+
+            AppScreen.GALLERY -> GalleryScreenUI(
+                photos = photos,
+                onBack = { currentScreen = AppScreen.MAP }
+            )
+
+            AppScreen.SETTINGS -> SettingsScreenUI(
+                settingsRepo = settingsRepo,
+                onBack = { currentScreen = AppScreen.MAP }
+            )
+        }
     }
-}
 
 // --- RESZTA UI (MapScreen, GalleryScreen itp.) POZOSTAJE TAKA SAMA JAK WCZEŚNIEJ ---
 // (Wklej tutaj całą resztę kodu z poprzedniego rozwiązania, zaczynając od fun MapScreenUI...)
@@ -162,8 +223,8 @@ fun MapScreenUI(
     onPhotoCaptured: (PhotoData) -> Unit,
     initialCenter: GeoPoint,
     initialZoom: Double,
-    onMapPositionChange: (GeoPoint, Double) -> Unit
-) {
+    onMapPositionChange: (GeoPoint, Double) -> Unit,
+    isMapDark: Boolean) {
     val context = LocalContext.current
     var currentPhotoUri by remember { mutableStateOf<Uri?>(null) }
     var tempLocationCapture by remember { mutableStateOf<GeoPoint?>(null) }
@@ -200,7 +261,12 @@ fun MapScreenUI(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     MapView(ctx).apply {
-                        setTileSource(TileSourceFactory.MAPNIK)
+                        setTileSource(
+                            if (isMapDark)
+                                TileSourceFactory.USGS_SAT
+                            else
+                                TileSourceFactory.MAPNIK
+                        )
                         setMultiTouchControls(true)
                         zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
                         controller.setZoom(initialZoom)
@@ -422,26 +488,34 @@ fun PhotoItem(photo: PhotoData) {
 }
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GalleryScreenUI(photos: List<PhotoData>, onBack: () -> Unit) {
+fun GalleryScreenUI(
+    photos: List<PhotoData>,
+    onBack: () -> Unit
+) {
     BackHandler { onBack() }
+
     var searchQuery by remember { mutableStateOf("") }
     var sortOption by remember { mutableStateOf(SortOption.DATE_DESC) }
     var showSortMenu by remember { mutableStateOf(false) }
 
-    // Filtering and sorting logic
+    // 🔍 FILTROWANIE + SORTOWANIE
     val filteredPhotos = remember(photos, searchQuery, sortOption) {
-        photos.filter {
-            it.name.contains(searchQuery, ignoreCase = true) ||
-                    (it.location?.let { loc -> "${loc.latitude}, ${loc.longitude}".contains(searchQuery) } ?: false)
-        }.sortedWith { a, b ->
-            when (sortOption) {
-                SortOption.DATE_DESC -> b.timestamp.compareTo(a.timestamp)
-                SortOption.DATE_ASC -> a.timestamp.compareTo(b.timestamp)
-                SortOption.NAME -> a.name.compareTo(b.name)
-                SortOption.SIZE_DESC -> b.size.compareTo(a.size)
-                SortOption.SIZE_ASC -> a.size.compareTo(b.size)
+        photos
+            .filter { photo ->
+                photo.name.contains(searchQuery, ignoreCase = true) ||
+                        photo.location?.let {
+                            "${it.latitude},${it.longitude}".contains(searchQuery)
+                        } == true
             }
-        }
+            .sortedWith { a, b ->
+                when (sortOption) {
+                    SortOption.DATE_DESC -> b.timestamp.compareTo(a.timestamp)
+                    SortOption.DATE_ASC -> a.timestamp.compareTo(b.timestamp)
+                    SortOption.NAME -> a.name.compareTo(b.name)
+                    SortOption.SIZE_DESC -> b.size.compareTo(a.size)
+                    SortOption.SIZE_ASC -> a.size.compareTo(b.size)
+                }
+            }
     }
 
     Scaffold(
@@ -449,22 +523,24 @@ fun GalleryScreenUI(photos: List<PhotoData>, onBack: () -> Unit) {
             TopAppBar(
                 title = { Text("Galeria") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Wstecz") }
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, null)
+                    }
                 },
                 actions = {
                     Box {
                         IconButton(onClick = { showSortMenu = true }) {
-                            Icon(Icons.Default.Sort, "Sortuj")
+                            Icon(Icons.Default.Sort, null)
                         }
                         DropdownMenu(
                             expanded = showSortMenu,
                             onDismissRequest = { showSortMenu = false }
                         ) {
-                            SortOption.values().forEach { option ->
+                            SortOption.values().forEach {
                                 DropdownMenuItem(
-                                    text = { Text(option.label) },
+                                    text = { Text(it.label) },
                                     onClick = {
-                                        sortOption = option
+                                        sortOption = it
                                         showSortMenu = false
                                     }
                                 )
@@ -474,92 +550,110 @@ fun GalleryScreenUI(photos: List<PhotoData>, onBack: () -> Unit) {
                 }
             )
         },
+
         bottomBar = {
-            Surface(tonalElevation = 8.dp) {
-                TextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    placeholder = { Text("Szukaj zdjęć...") },
-                    leadingIcon = { Icon(Icons.Default.Search, null) },
-                    shape = RoundedCornerShape(24.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        disabledIndicatorColor = Color.Transparent,
-                        errorIndicatorColor = Color.Transparent
+            TextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                placeholder = { Text("Szukaj po nazwie lub lokalizacji...") },
+                leadingIcon = { Icon(Icons.Default.Search, null) },
+                shape = RoundedCornerShape(24.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent
                 )
-                )
-            }
+            )
         }
     ) { padding ->
         if (filteredPhotos.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text("Brak zdjęć do wyświetlenia.", color = Color.Gray)
+            Box(
+                Modifier.fillMaxSize().padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Brak wyników", color = Color.Gray)
             }
         } else {
             LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(padding),
+                Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(filteredPhotos) { photo ->
-                    PhotoItem(photo)
+                items(filteredPhotos) {
+                    PhotoItem(it)
                 }
             }
         }
     }
 }
 
-
 @Composable
-fun SettingsScreenUI(onBack: () -> Unit) {
-    var isDarkMode by remember { mutableStateOf(false) } // Load from DataStore
-    var isMapDarkMode by remember { mutableStateOf(false) } // Load from DataStore
+fun SettingsScreenUI(
+    settingsRepo: SettingsRepository,
+    onBack: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val darkMode by settingsRepo.darkMode.collectAsState(false)
+    val mapDark by settingsRepo.mapDark.collectAsState(false)
+
     BackHandler { onBack() }
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                //.verticalScroll(rememberScrollState())
-                .padding(16.dp)
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+
+        IconButton(onClick = onBack) {
+            Icon(Icons.Default.ArrowBack, null)
+        }
+
+        Text("Ustawienia", style = MaterialTheme.typography.headlineSmall)
+
+        Spacer(Modifier.height(16.dp))
+
+        SettingRow(
+            title = "Tryb ciemny aplikacji",
+            checked = darkMode
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, null)
+            scope.launch {
+                settingsRepo.setDarkMode(it)
             }
-            Text("Ustawienia", style = MaterialTheme.typography.headlineSmall)
-            // Dark Mode Preference
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 12.dp)
-                    .clickable { isDarkMode = !isDarkMode },
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Tryb ciemny aplikacji", style = MaterialTheme.typography.bodyLarge)
-                Switch(
-                    checked = isDarkMode,
-                    onCheckedChange = { isDarkMode = it }
-                )
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 12.dp)
-                    .clickable { isMapDarkMode = !isMapDarkMode },
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Tryb ciemny mapy", style = MaterialTheme.typography.bodyLarge)
-                Switch(
-                    checked = isMapDarkMode,
-                    onCheckedChange = { isMapDarkMode = it }
-                )
+        }
+
+        SettingRow(
+            title = "Tryb ciemny mapy",
+            checked = mapDark
+        ) {
+            scope.launch {
+                settingsRepo.setMapDark(it)
             }
         }
     }
+}
+
+@Composable
+fun SettingRow(
+    title: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(title)
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange
+        )
+    }
+}
 
 fun createBlueDot(): android.graphics.Bitmap {
     val size = 60
@@ -636,4 +730,4 @@ fun createClusterBitmap(count: Int): android.graphics.Bitmap {
     canvas.drawText(count.toString(), size / 2f, (size / 2f) + textOffset, paint)
 
     return bitmap
-}
+}}
