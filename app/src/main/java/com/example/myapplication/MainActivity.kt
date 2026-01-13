@@ -66,6 +66,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 
 // Model danych UI
 data class PhotoData(
+    val id: Int, // NOWE
     val uri: Uri,
     val location: GeoPoint?,
     val timestamp: Long = System.currentTimeMillis(),
@@ -138,8 +139,10 @@ fun TrailoryNavigation(
     val isMapDark by settingsRepo.mapDark.collectAsState(initial = false)
     val photosEntityList by database.photoDao().getAllPhotos().collectAsState(initial = emptyList())
 
+    // 1. ODCZYT Z BAZY (Teraz pobieramy też ID!)
     val photos = photosEntityList.map { entity ->
         PhotoData(
+            id = entity.id, // Przekazujemy ID z bazy
             uri = Uri.parse(entity.uriString),
             location = if (entity.latitude != null && entity.longitude != null) {
                 GeoPoint(entity.latitude, entity.longitude)
@@ -187,9 +190,16 @@ fun TrailoryNavigation(
             },
             isMapDark = isMapDark
         )
+        // 2. PRZEKAZANIE FUNKCJI USUWANIA DO GALERII
         AppScreen.GALLERY -> GalleryScreenUI(
             photos = photos,
-            onBack = { currentScreen = AppScreen.MAP }
+            onBack = { currentScreen = AppScreen.MAP },
+            onDeletePhoto = { photoToDelete ->
+                scope.launch {
+                    database.photoDao().deleteById(photoToDelete.id)
+                    Toast.makeText(context, "Usunięto z aplikacji", Toast.LENGTH_SHORT).show()
+                }
+            }
         )
         AppScreen.SETTINGS -> SettingsScreenUI(
             settingsRepo = settingsRepo,
@@ -414,6 +424,7 @@ fun MapScreenUI(
                                         // Zapisz
                                         val finalName = if (photoNameInput.isBlank()) "Bez nazwy" else photoNameInput
                                         val newData = PhotoData(
+                                            id = 0, // Dajemy 0, bo to nowe zdjęcie
                                             uri = currentPhotoUri!!,
                                             location = tempLocationCapture,
                                             name = finalName,
@@ -560,8 +571,12 @@ fun MapScreenUI(
 
 // --- Galeria ---
 @Composable
-fun PhotoItem(photo: PhotoData) {
+fun PhotoItem(
+    photo: PhotoData,
+    onDeleteClick: () -> Unit // Nowy parametr: co robić jak klikniemy kosz
+) {
     val df = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
+
     Card(
         modifier = Modifier.fillMaxWidth().height(100.dp),
         shape = RoundedCornerShape(12.dp),
@@ -574,19 +589,35 @@ fun PhotoItem(photo: PhotoData) {
                 modifier = Modifier.width(120.dp).fillMaxHeight(),
                 contentScale = ContentScale.Crop
             )
+
+            // Środek - Teksty
             Column(
-                modifier = Modifier.padding(12.dp).fillMaxHeight(),
+                modifier = Modifier
+                    .weight(1f) // Zajmuje dostępne miejsce
+                    .padding(12.dp)
+                    .fillMaxHeight(),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
                 Column {
                     Text(photo.name, fontWeight = FontWeight.Bold, maxLines = 1, fontSize = 14.sp)
                     Text(df.format(Date(photo.timestamp)), fontSize = 11.sp, color = Color.Gray)
                 }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Row {
                     Text("${photo.size / 1024} KB", fontSize = 10.sp, color = Color.LightGray)
-                    photo.location?.let {
-                        Text("%.4f, %.4f".format(it.latitude, it.longitude), fontSize = 10.sp, color = Color.LightGray)
-                    }
+                }
+            }
+
+            // Prawa strona - Przycisk Kosza
+            Box(
+                modifier = Modifier.fillMaxHeight(),
+                contentAlignment = Alignment.Center
+            ) {
+                IconButton(onClick = onDeleteClick) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Usuń",
+                        tint = MaterialTheme.colorScheme.error // Czerwony kolor
+                    )
                 }
             }
         }
@@ -597,7 +628,8 @@ fun PhotoItem(photo: PhotoData) {
 @Composable
 fun GalleryScreenUI(
     photos: List<PhotoData>,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onDeletePhoto: (PhotoData) -> Unit // Funkcja usuwająca otrzymana z MainActivity
 ) {
     BackHandler { onBack() }
 
@@ -605,10 +637,11 @@ fun GalleryScreenUI(
     var sortOption by remember { mutableStateOf(SortOption.DATE_DESC) }
     var showSortMenu by remember { mutableStateOf(false) }
 
-    // Tworzymy "porównywarkę" dla języka polskiego
+    // Zmienna do przechowywania zdjęcia, które chcemy usunąć (do dialogu)
+    var photoToDelete by remember { mutableStateOf<PhotoData?>(null) }
+
     val collator = remember { java.text.Collator.getInstance(java.util.Locale("pl", "PL")) }
 
-    // 🔍 FILTROWANIE + SORTOWANIE
     val filteredPhotos = remember(photos, searchQuery, sortOption) {
         photos
             .filter { photo ->
@@ -621,7 +654,6 @@ fun GalleryScreenUI(
                 when (sortOption) {
                     SortOption.DATE_DESC -> b.timestamp.compareTo(a.timestamp)
                     SortOption.DATE_ASC -> a.timestamp.compareTo(b.timestamp)
-                    // Sortowanie po nazwie z uwzględnieniem polskich znaków
                     SortOption.NAME -> collator.compare(a.name, b.name)
                     SortOption.SIZE_DESC -> b.size.compareTo(a.size)
                     SortOption.SIZE_ASC -> a.size.compareTo(b.size)
@@ -631,70 +663,63 @@ fun GalleryScreenUI(
 
     Scaffold(
         topBar = {
-            // ZMIANA: Kolumna zawiera teraz i Belkę i Wyszukiwarkę
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface) // Tło zgodne z motywem
-            ) {
+            Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
                 TopAppBar(
                     title = { Text("Galeria") },
                     navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.Default.ArrowBack, null)
-                        }
+                        IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
                     },
                     actions = {
                         Box {
-                            IconButton(onClick = { showSortMenu = true }) {
-                                Icon(Icons.Default.Sort, null)
-                            }
-                            DropdownMenu(
-                                expanded = showSortMenu,
-                                onDismissRequest = { showSortMenu = false }
-                            ) {
+                            IconButton(onClick = { showSortMenu = true }) { Icon(Icons.Default.Sort, null) }
+                            DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
                                 SortOption.values().forEach {
-                                    DropdownMenuItem(
-                                        text = { Text(it.label) },
-                                        onClick = {
-                                            sortOption = it
-                                            showSortMenu = false
-                                        }
-                                    )
+                                    DropdownMenuItem(text = { Text(it.label) }, onClick = { sortOption = it; showSortMenu = false })
                                 }
                             }
                         }
                     }
                 )
-
-                // WYSZUKIWARKA NA GÓRZE
                 TextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    placeholder = { Text("Szukaj po nazwie lub lokalizacji...") },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    placeholder = { Text("Szukaj...") },
                     leadingIcon = { Icon(Icons.Default.Search, null) },
                     shape = RoundedCornerShape(24.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent
-                    ),
+                    colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
                     singleLine = true
                 )
-
-                // Opcjonalnie: cienka linia oddzielająca
-                HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
             }
         }
-        // USUNĄŁEM bottomBar!
     ) { padding ->
+        // OKNO POTWIERDZENIA USUWANIA
+        if (photoToDelete != null) {
+            AlertDialog(
+                onDismissRequest = { photoToDelete = null },
+                title = { Text("Usuń zdjęcie") },
+                text = { Text("Czy na pewno chcesz usunąć zdjęcie \"${photoToDelete?.name}\" z aplikacji?") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            photoToDelete?.let { onDeletePhoto(it) } // Wywołujemy usuwanie
+                            photoToDelete = null // Zamykamy okno
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Usuń")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { photoToDelete = null }) {
+                        Text("Anuluj")
+                    }
+                }
+            )
+        }
+
         if (filteredPhotos.isEmpty()) {
-            Box(
-                Modifier.fillMaxSize().padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 Text("Brak wyników", color = Color.Gray)
             }
         } else {
@@ -703,8 +728,14 @@ fun GalleryScreenUI(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(filteredPhotos) {
-                    PhotoItem(it)
+                items(filteredPhotos) { photo ->
+                    PhotoItem(
+                        photo = photo,
+                        onDeleteClick = {
+                            // Kliknięcie kosza nie usuwa od razu, tylko otwiera dialog
+                            photoToDelete = photo
+                        }
+                    )
                 }
             }
         }
