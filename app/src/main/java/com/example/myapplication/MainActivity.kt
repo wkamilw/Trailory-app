@@ -369,13 +369,28 @@ fun MapScreenUI(
                             Spacer(modifier = Modifier.height(16.dp))
 
                             // POLE TEKSTOWE
+                            val maxChar = 30
                             OutlinedTextField(
                                 value = photoNameInput,
-                                onValueChange = { photoNameInput = it },
+                                onValueChange = {
+                                    // Pozwalamy wpisać tylko jeśli nie przekracza limitu
+                                    if (it.length <= maxChar) {
+                                        photoNameInput = it
+                                    }
+                                },
                                 label = { Text("Nazwa miejsca") },
                                 placeholder = { Text("np. Stary dąb") },
                                 singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.fillMaxWidth(),
+                                // Licznik znaków pod polem: "12 / 30"
+                                supportingText = {
+                                    Text(
+                                        text = "${photoNameInput.length} / $maxChar",
+                                        modifier = Modifier.fillMaxWidth(),
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                                        color = if (photoNameInput.length == maxChar) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             )
 
                             Spacer(modifier = Modifier.height(24.dp))
